@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -154,9 +155,31 @@ def _storage_id(tensor: torch.Tensor) -> int:
     return tensor.data_ptr()
 
 
-def _checkpoint_keys_compatible(model: torch.nn.Module, ckpt_keys: set[str]) -> None:
+def _map_ckpt_key(key: str) -> str:
+    # qwen3_5_text PrefixChange(prefix_to_remove="language_model", model_prefix="model")
+    infix = "model.language_model."
+    if key.startswith(infix):
+        return "model." + key[len(infix) :]
+    return key
+
+
+def _skip_unexpected_ckpt_key(model: torch.nn.Module, key: str) -> bool:
+    patterns = getattr(type(model), "_keys_to_ignore_on_load_unexpected", None) or []
+    return any(re.search(pattern, key) for pattern in patterns)
+
+
+def _checkpoint_key_map(model: torch.nn.Module, ckpt_keys: set[str]) -> dict[str, str]:
+    mapped: dict[str, str] = {}
+    for key in ckpt_keys:
+        if _skip_unexpected_ckpt_key(model, key):
+            continue
+        mapped[key] = _map_ckpt_key(key)
+    return mapped
+
+
+def _checkpoint_keys_compatible(model: torch.nn.Module, mapped_keys: set[str]) -> None:
     model_keys = set(model.state_dict().keys())
-    unexpected = ckpt_keys - model_keys
+    unexpected = mapped_keys - model_keys
     if unexpected:
         sample = ", ".join(sorted(unexpected)[:4])
         raise _ShardLoadFallback(f"unexpected checkpoint keys (e.g. {sample})")
@@ -166,17 +189,24 @@ def _checkpoint_keys_compatible(model: torch.nn.Module, ckpt_keys: set[str]) -> 
     for name, tensor in tensors.items():
         aliases.setdefault(_storage_id(tensor), []).append(name)
 
-    missing = model_keys - ckpt_keys
+    missing = model_keys - mapped_keys
+    ignore_missing = getattr(type(model), "_keys_to_ignore_on_load_missing", None) or []
     for name in missing:
+        if any(re.search(pattern, name) for pattern in ignore_missing):
+            continue
         tensor = tensors.get(name)
         if tensor is None:
             raise _ShardLoadFallback(f"missing checkpoint key {name}")
         names = aliases[_storage_id(tensor)]
-        if not any(alias in ckpt_keys for alias in names):
+        if not any(alias in mapped_keys for alias in names):
             raise _ShardLoadFallback(f"missing checkpoint key {name}")
 
 
-def _copy_shard_tensors(checkpoint_files: list[str], tensors: dict[str, torch.Tensor]) -> None:
+def _copy_shard_tensors(
+    checkpoint_files: list[str],
+    tensors: dict[str, torch.Tensor],
+    ckpt_to_model: dict[str, str],
+) -> None:
     from safetensors import safe_open
     from tqdm import tqdm
 
@@ -185,13 +215,18 @@ def _copy_shard_tensors(checkpoint_files: list[str], tensors: dict[str, torch.Te
     for path in tqdm(checkpoint_files, desc="Loading shards"):
         with safe_open(path, framework="pt", device="cuda") as handle:
             for key in handle.keys():
-                dst = tensors[key]
+                dst_name = ckpt_to_model.get(key)
+                if dst_name is None:
+                    continue
+                dst = tensors[dst_name]
                 storage = _storage_id(dst)
                 if storage in filled:
                     continue
                 src = handle.get_tensor(key)
                 if src.shape != dst.shape:
-                    raise _ShardLoadFallback(f"shape mismatch for {key}: {tuple(src.shape)} vs {tuple(dst.shape)}")
+                    raise _ShardLoadFallback(
+                        f"shape mismatch for {dst_name}: {tuple(src.shape)} vs {tuple(dst.shape)}"
+                    )
                 if src.dtype != dst.dtype:
                     src = src.to(dtype=dst.dtype)
                 dst.data.copy_(src)
@@ -220,8 +255,9 @@ def _load_cuda_shards(model_id: str) -> torch.nn.Module:
     checkpoint_files, ckpt_keys = _resolve_safetensor_files(model_id)
     model = _empty_cuda_model(model_id)
     try:
-        _checkpoint_keys_compatible(model, ckpt_keys)
-        _copy_shard_tensors(checkpoint_files, _model_tensors(model))
+        ckpt_to_model = _checkpoint_key_map(model, ckpt_keys)
+        _checkpoint_keys_compatible(model, set(ckpt_to_model.values()))
+        _copy_shard_tensors(checkpoint_files, _model_tensors(model), ckpt_to_model)
     except _ShardLoadFallback:
         del model
         if torch.cuda.is_available():
