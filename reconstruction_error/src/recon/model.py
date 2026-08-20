@@ -96,20 +96,166 @@ def _use_gdn_kernels() -> bool:
     return torch.cuda.get_device_capability() == (12, 1)
 
 
-def _load_transformers(model_id: str):
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+class _ShardLoadFallback(Exception):
+    """Checkpoint keys or format are not a direct CUDA shard load; use from_pretrained."""
+
+
+def _remote_kwargs() -> dict[str, Any]:
+    if _use_gdn_kernels():
+        return {"trust_remote_code": True}
+    return {}
+
+
+def _apply_gdn_kernels(model: torch.nn.Module) -> None:
+    if not _use_gdn_kernels():
+        return
+    print("loading Gated DeltaNet Hub kernels (GB10 / RECON_USE_KERNELS=1)")
+    model.set_use_kernels(True)
+
+
+def _resolve_safetensor_files(model_id: str) -> tuple[list[str], set[str]]:
+    from transformers.modeling_utils import _get_resolved_checkpoint_files
+
+    checkpoint_files, sharded_metadata = _get_resolved_checkpoint_files(
+        model_id,
+        variant=None,
+        gguf_file=None,
+        use_safetensors=True,
+        user_agent=None,
+        is_remote_code=False,
+    )
+    if not checkpoint_files:
+        raise _ShardLoadFallback("no checkpoint files")
+    if any(not path.endswith(".safetensors") for path in checkpoint_files):
+        raise _ShardLoadFallback("checkpoint is not safetensors")
+
+    if sharded_metadata and sharded_metadata.get("weight_map"):
+        ckpt_keys = set(sharded_metadata["weight_map"])
+    else:
+        from safetensors import safe_open
+
+        ckpt_keys = set()
+        for path in checkpoint_files:
+            with safe_open(path, framework="pt") as handle:
+                ckpt_keys.update(handle.keys())
+    return checkpoint_files, ckpt_keys
+
+
+def _model_tensors(model: torch.nn.Module) -> dict[str, torch.Tensor]:
+    tensors: dict[str, torch.Tensor] = {}
+    tensors.update(model.named_parameters())
+    tensors.update(model.named_buffers())
+    return tensors
+
+
+def _storage_id(tensor: torch.Tensor) -> int:
+    if tensor.numel() == 0:
+        return id(tensor)
+    return tensor.data_ptr()
+
+
+def _checkpoint_keys_compatible(model: torch.nn.Module, ckpt_keys: set[str]) -> None:
+    model_keys = set(model.state_dict().keys())
+    unexpected = ckpt_keys - model_keys
+    if unexpected:
+        sample = ", ".join(sorted(unexpected)[:4])
+        raise _ShardLoadFallback(f"unexpected checkpoint keys (e.g. {sample})")
+
+    tensors = _model_tensors(model)
+    aliases: dict[int, list[str]] = {}
+    for name, tensor in tensors.items():
+        aliases.setdefault(_storage_id(tensor), []).append(name)
+
+    missing = model_keys - ckpt_keys
+    for name in missing:
+        tensor = tensors.get(name)
+        if tensor is None:
+            raise _ShardLoadFallback(f"missing checkpoint key {name}")
+        names = aliases[_storage_id(tensor)]
+        if not any(alias in ckpt_keys for alias in names):
+            raise _ShardLoadFallback(f"missing checkpoint key {name}")
+
+
+def _copy_shard_tensors(checkpoint_files: list[str], tensors: dict[str, torch.Tensor]) -> None:
+    from safetensors import safe_open
+    from tqdm import tqdm
+
+    filled: set[int] = set()
+    print(f"loading {len(checkpoint_files)} safetensor shards onto cuda")
+    for path in tqdm(checkpoint_files, desc="Loading shards"):
+        with safe_open(path, framework="pt", device="cuda") as handle:
+            for key in handle.keys():
+                dst = tensors[key]
+                storage = _storage_id(dst)
+                if storage in filled:
+                    continue
+                src = handle.get_tensor(key)
+                if src.shape != dst.shape:
+                    raise _ShardLoadFallback(f"shape mismatch for {key}: {tuple(src.shape)} vs {tuple(dst.shape)}")
+                if src.dtype != dst.dtype:
+                    src = src.to(dtype=dst.dtype)
+                dst.data.copy_(src)
+                filled.add(storage)
+                del src
+
+
+def _empty_cuda_model(model_id: str):
+    from transformers import AutoConfig, AutoModelForCausalLM
+    from transformers.initialization import no_init_weights
+
+    remote = _remote_kwargs()
+    config = AutoConfig.from_pretrained(model_id, **remote)
+    with no_init_weights(), torch.device("cuda"):
+        model = AutoModelForCausalLM.from_config(
+            config,
+            dtype=torch.bfloat16,
+            attn_implementation=ATTN_IMPLEMENTATION,
+            **remote,
+        )
+    model.tie_weights()
+    return model
+
+
+def _load_cuda_shards(model_id: str) -> torch.nn.Module:
+    checkpoint_files, ckpt_keys = _resolve_safetensor_files(model_id)
+    model = _empty_cuda_model(model_id)
+    try:
+        _checkpoint_keys_compatible(model, ckpt_keys)
+        _copy_shard_tensors(checkpoint_files, _model_tensors(model))
+    except _ShardLoadFallback:
+        del model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        raise
+    return model
+
+
+def _load_transformers_pretrained(model_id: str) -> torch.nn.Module:
+    from transformers import AutoModelForCausalLM
 
     kwargs: dict[str, Any] = {
         "dtype": torch.bfloat16,
         "device_map": "cuda",
         "attn_implementation": ATTN_IMPLEMENTATION,
+        **_remote_kwargs(),
     }
     if _use_gdn_kernels():
         kwargs["use_kernels"] = True
-        kwargs["trust_remote_code"] = True
         print("loading Gated DeltaNet Hub kernels (GB10 / RECON_USE_KERNELS=1)")
-    model = AutoModelForCausalLM.from_pretrained(model_id, **kwargs)
-    model.eval()
+    return AutoModelForCausalLM.from_pretrained(model_id, **kwargs)
+
+
+def _load_transformers(model_id: str):
+    from transformers import AutoTokenizer
+
+    try:
+        model = _load_cuda_shards(model_id)
+        model.eval()
+        _apply_gdn_kernels(model)
+    except _ShardLoadFallback as exc:
+        print(f"gpu shard load fallback to from_pretrained: {exc}")
+        model = _load_transformers_pretrained(model_id)
+        model.eval()
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     return model, tokenizer, "transformers"
 
