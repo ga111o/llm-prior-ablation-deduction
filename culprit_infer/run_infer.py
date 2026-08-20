@@ -68,23 +68,40 @@ def _chat_kwargs() -> dict[str, Any]:
     }
 
 
-def apply_chat_text(processor, text: str) -> str:
+THINKING_REQUIRED = "tokenizer does not support enable_thinking; thinking is required"
+
+
+def _is_thinking_unsupported(exc: BaseException) -> bool:
+    return "enable_thinking" in str(exc)
+
+
+def _apply_chat_template(processor, text: str, **extra: Any) -> Any:
     inner = inner_tokenizer(processor)
-    messages = user_messages(text)
-    kwargs = {"tokenize": False, **_chat_kwargs()}
-    for target in (processor, inner):
-        try:
-            return target.apply_chat_template(messages, **kwargs)
-        except TypeError:
-            fallback = {k: v for k, v in kwargs.items() if k != "enable_thinking"}
+    kwargs = {**extra, **_chat_kwargs()}
+    message_variants = [
+        user_messages(text),
+        [{"role": "user", "content": [{"type": "text", "text": text}]}],
+    ]
+    targets = (processor,) if processor is inner else (processor, inner)
+    last_exc: BaseException | None = None
+    thinking_unsupported = False
+    for messages in message_variants:
+        for target in targets:
             try:
-                return target.apply_chat_template(messages, **fallback)
-            except Exception:
-                continue
-        except Exception:
-            continue
-    messages = [{"role": "user", "content": [{"type": "text", "text": text}]}]
-    return inner.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                return target.apply_chat_template(messages, **kwargs)
+            except TypeError as exc:
+                last_exc = exc
+                if _is_thinking_unsupported(exc):
+                    thinking_unsupported = True
+            except Exception as exc:
+                last_exc = exc
+    if thinking_unsupported:
+        raise RuntimeError(THINKING_REQUIRED) from last_exc
+    raise RuntimeError("failed to apply chat template with thinking enabled") from last_exc
+
+
+def apply_chat_text(processor, text: str) -> str:
+    return _apply_chat_template(processor, text, tokenize=False)
 
 
 def _token_len(ids: Any) -> int:
@@ -99,20 +116,12 @@ def count_prompt_tokens(processor, text: str) -> int:
     inner = inner_tokenizer(processor)
     if getattr(inner, "pad_token", None) is None:
         inner.pad_token = inner.eos_token
-    messages = user_messages(text)
-    kwargs = {"tokenize": True, "return_dict": True, **_chat_kwargs()}
     try:
-        encoded = processor.apply_chat_template(messages, **kwargs)
+        encoded = _apply_chat_template(processor, text, tokenize=True, return_dict=True)
         return _token_len(encoded["input_ids"])
-    except TypeError:
-        kwargs.pop("enable_thinking", None)
-        try:
-            encoded = processor.apply_chat_template(messages, **kwargs)
-            return _token_len(encoded["input_ids"])
-        except Exception:
-            pass
-    except Exception:
-        pass
+    except RuntimeError as exc:
+        if str(exc) == THINKING_REQUIRED:
+            raise
     prompt = apply_chat_text(processor, text)
     ids = inner(prompt, add_special_tokens=False)["input_ids"]
     return _token_len(ids)
@@ -124,25 +133,17 @@ def encode_prompt(processor, text: str, device: Any) -> dict[str, Any]:
     inner = inner_tokenizer(processor)
     if getattr(inner, "pad_token", None) is None:
         inner.pad_token = inner.eos_token
-    messages = user_messages(text)
-    kwargs = {
-        "tokenize": True,
-        "return_dict": True,
-        "return_tensors": "pt",
-        **_chat_kwargs(),
-    }
-    encoded = None
     try:
-        encoded = processor.apply_chat_template(messages, **kwargs)
-    except TypeError:
-        kwargs.pop("enable_thinking", None)
-        try:
-            encoded = processor.apply_chat_template(messages, **kwargs)
-        except Exception:
-            encoded = None
-    except Exception:
-        encoded = None
-    if encoded is None:
+        encoded = _apply_chat_template(
+            processor,
+            text,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
+        )
+    except RuntimeError as exc:
+        if str(exc) == THINKING_REQUIRED:
+            raise
         prompt = apply_chat_text(processor, text)
         encoded = inner(prompt, return_tensors="pt", add_special_tokens=False)
     tensors: dict[str, Any] = {}
