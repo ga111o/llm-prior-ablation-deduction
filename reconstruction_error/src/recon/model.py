@@ -90,8 +90,16 @@ def _find_language_layers(model: torch.nn.Module) -> torch.nn.ModuleList:
 
 
 def _use_gdn_kernels() -> bool:
-    if os.environ.get("RECON_USE_KERNELS", "") == "1":
-        return True
+    raw = os.environ.get("RECON_USE_KERNELS")
+    if raw is not None and raw.strip() != "":
+        value = raw.strip().lower()
+        if value in {"1", "true", "on"}:
+            return True
+        if value in {"0", "false", "off"}:
+            return False
+        raise ValueError(
+            f"invalid RECON_USE_KERNELS={raw!r}; expected 0/1, true/false, or on/off"
+        )
     if not torch.cuda.is_available():
         return False
     return torch.cuda.get_device_capability() == (12, 1)
@@ -111,7 +119,13 @@ def _apply_gdn_kernels(model: torch.nn.Module) -> None:
     if not _use_gdn_kernels():
         return
     print("loading Gated DeltaNet Hub kernels (GB10 / RECON_USE_KERNELS=1)")
-    model.set_use_kernels(True)
+    try:
+        model.set_use_kernels(True)
+    except (TypeError, RuntimeError, OSError) as exc:
+        print(
+            f"warning: Gated DeltaNet Hub kernels failed "
+            f"({type(exc).__name__}: {exc}); continuing with PyTorch GDN"
+        )
 
 
 def _resolve_safetensor_files(model_id: str) -> tuple[list[str], set[str]]:
@@ -275,9 +289,6 @@ def _load_transformers_pretrained(model_id: str) -> torch.nn.Module:
         "attn_implementation": ATTN_IMPLEMENTATION,
         **_remote_kwargs(),
     }
-    if _use_gdn_kernels():
-        kwargs["use_kernels"] = True
-        print("loading Gated DeltaNet Hub kernels (GB10 / RECON_USE_KERNELS=1)")
     return AutoModelForCausalLM.from_pretrained(model_id, **kwargs)
 
 
@@ -287,11 +298,11 @@ def _load_transformers(model_id: str):
     try:
         model = _load_cuda_shards(model_id)
         model.eval()
-        _apply_gdn_kernels(model)
     except _ShardLoadFallback as exc:
         print(f"gpu shard load fallback to from_pretrained: {exc}")
         model = _load_transformers_pretrained(model_id)
         model.eval()
+    _apply_gdn_kernels(model)
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     return model, tokenizer, "transformers"
 

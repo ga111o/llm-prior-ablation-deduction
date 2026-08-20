@@ -28,7 +28,9 @@ uv pip install -e .
 
 Optional: NGC `pytorch:25.10-py3` (or newer) instead of the cu128 wheel.
 
-Do **not** install `flash-attn`, `causal_conv1d`, `fla`, Unsloth, or bitsandbytes. On GB10 the loader sets `use_kernels=True` so Gated DeltaNet uses the Hub kernel (`Atlas-Inference/gdn`). Override with `RECON_USE_KERNELS=1` on other GPUs.
+Do **not** install `flash-attn`, `causal_conv1d`, `fla`, Unsloth, or bitsandbytes. On GB10 the loader tries `set_use_kernels(True)` so Gated DeltaNet can use the Hub kernel (`Atlas-Inference/gdn`). If kernelize fails (transformers `Qwen3_5GatedDeltaNet.forward` vs the pinned Hub revision), it prints a warning and continues with the slower PyTorch GDN path. Force on with `RECON_USE_KERNELS=1` on other GPUs; force off with `RECON_USE_KERNELS=0`.
+
+`Python.h` / Triton CPU warnings from `kernels-community/fla` JIT are unrelated to that GDN signature mismatch. Optional: install distro `python3-devel` if you want that compile to succeed.
 
 Gated Hub models need a token in `~/.cache/huggingface/token` or `HF_TOKEN`.
 
@@ -77,6 +79,6 @@ Uses PyTorch SDPA (`attn_implementation="sdpa"`), preferring Flash. Does not ins
 | `RECON_SAE_TOPK` | `50` |
 | `RECON_SEQ_LEN` | `1024` |
 | `RECON_N_SEQ` | `2048` |
-| `RECON_USE_KERNELS` | unset (on if GB10) |
+| `RECON_USE_KERNELS` | unset (try on if GB10; `0`/`false`/`off` force off, `1`/`true`/`on` force on) |
 
 OOM: pass `--seq-len 512` (token count is written into the JSON).
