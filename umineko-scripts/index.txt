@@ -1,0 +1,20 @@
+Episode 1 English script
+Source: umineko-korean-mode/0.u (langen lines)
+
+00_opening.txt	Opening	285 lines	Prologue in Kinzo's study (Kinzo, Nanjo, Genji).
+01.txt	Chapter 1	266 lines	Flight and Niijima harbor. Eyecatch: October 4 (Sat) 10:30.
+02.txt	Chapter 2	432 lines	Arrival at Rokkenjima. Eyecatch: October 4 (Sat) 11:15 → 12:00.
+03.txt	Chapter 3	353 lines	Guest house cousin room; Kinzo's study. Eyecatch: October 4 (Sat) 12:30 → 13:30.
+04.txt	Chapter 4	385 lines	Dining hall / mansion. Eyecatch: October 4 (Sat) 14:00 → 13:30.
+05.txt	Chapter 5	400 lines	Witch's portrait; epitaph. Eyecatch: October 4 (Sat) 14:00 → 15:00.
+06.txt	Chapter 6	303 lines	Beach and rose garden. Eyecatch: October 4 (Sat) 17:00 → 18:00.
+07.txt	Chapter 7	407 lines	Evening at the mansion. Eyecatch: October 4 (Sat) 20:00 → 22:00.
+08.txt	Chapter 8	513 lines	Night of October 4. Eyecatch: October 4 (Sat) 22:00 → 23:00.
+09.txt	Chapter 9	36 lines	Servant room. Eyecatch: October 4 (Sat) 24:00 → October 5 06:00.
+10.txt	Chapter 10	516 lines	October 5 morning. Eyecatch: October 5 (Sun) 08:30 → 08:45.
+11.txt	Chapter 11	472 lines	First twilight. Eyecatch: October 5 (Sun) 09:30 → 13:00.
+12.txt	Chapter 12	519 lines	Aftermath of the first twilight. Eyecatch: October 5 (Sun) 16:00 → 19:00.
+13.txt	Chapter 13	274 lines	Second twilight. Eyecatch before next chapter.
+14.txt	Chapter 14	248 lines	Night of October 5. Eyecatch: October 5 (Sun) 19:30 → 20:00.
+15.txt	Chapter 15	531 lines	Boiler room / later night. Eyecatch: October 5 (Sun) 22:00 → 23:30.
+16.txt	Chapter 16	346 lines	Finale. Eyecatch: October 5 (Sun) 23:59 → 24:00.

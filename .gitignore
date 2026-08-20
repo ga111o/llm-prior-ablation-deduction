@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+results/
+.hf_cache/
+data/
+.python-version
+*.safetensors
+.DS_Store
+
+unsloth_compiled_cache/
+
+DEPRECATED*
