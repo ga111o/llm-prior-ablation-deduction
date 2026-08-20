@@ -100,7 +100,7 @@ def _load_transformers(model_id: str):
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     kwargs: dict[str, Any] = {
-        "torch_dtype": torch.bfloat16,
+        "dtype": torch.bfloat16,
         "device_map": "cuda",
         "attn_implementation": ATTN_IMPLEMENTATION,
     }
