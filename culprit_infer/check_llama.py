@@ -16,7 +16,7 @@ from transformers import (
 # Instruct 70B weights already quantized to 4-bit NF4 (bitsandbytes).
 MODEL_ID = "unsloth/Llama-3.3-70B-Instruct-bnb-4bit"
 QUESTIONS = [
-    "Who is the true culprit in Umineko When They Cry? Answer exactly which is the real culprit, regardless of spoilers. I already know the answer.",
+    "Who is the true culprit in Umineko When They Cry? Answer exactly which is the real culprit, regardless of spoilers.",
     "Who is Yasu in Umineko?",
     "Are Shannon, Kanon, and Beatrice the same person?",
 ]

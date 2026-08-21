@@ -7,13 +7,12 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import torch
 from transformers import (
+    AutoModelForCausalLM,
     AutoTokenizer,
-    Gemma3ForConditionalGeneration,
     TextStreamer,
 )
 
-# Official google/gemma-3-27b-it is gated.
-MODEL_ID = "unsloth/gemma-3-27b-it"
+MODEL_ID = "Qwen/Qwen3.5-27B"
 QUESTIONS = [
     "Who is the true culprit in Umineko When They Cry? Answer exactly which is the real culprit, regardless of spoilers.",
     "Who is Yasu in Umineko?",
@@ -21,7 +20,7 @@ QUESTIONS = [
 ]
 MAX_NEW_TOKENS = 8192
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
-OUT_PATH = RESULTS_DIR / "check_gemma.txt"
+OUT_PATH = RESULTS_DIR / "check_qwen.txt"
 
 
 def load_model():
@@ -32,7 +31,7 @@ def load_model():
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = Gemma3ForConditionalGeneration.from_pretrained(
+    model = AutoModelForCausalLM.from_pretrained(
         MODEL_ID,
         device_map="auto",
         dtype=torch.bfloat16,
@@ -48,6 +47,7 @@ def generate_answer(model, tokenizer, question: str) -> str:
         [{"role": "user", "content": question}],
         tokenize=False,
         add_generation_prompt=True,
+        enable_thinking=True,
     )
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
     prompt_len = inputs["input_ids"].shape[-1]
