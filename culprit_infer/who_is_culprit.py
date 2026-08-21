@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "reconstruction_error" / "src"))
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import torch
-from recon.model import load_model
-from transformers import LogitsProcessor, LogitsProcessorList
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+    LogitsProcessor,
+    LogitsProcessorList,
+    TextStreamer,
+)
 
-MODEL_ID = "Qwen/Qwen3.5-27B"
+MODEL_ID = "meta-llama/Llama-3.3-70B-Instruct"
 QUESTION = "Who is the true culprit in Umineko When They Cry?"
 MAX_NEW_TOKENS = 8192
 PRESENCE_PENALTY = 1.5
@@ -38,20 +40,44 @@ class PresencePenaltyLogitsProcessor(LogitsProcessor):
         return scores - self.penalty * presence
 
 
+def load_model():
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    quantization_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_use_double_quant=True,
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL_ID,
+        quantization_config=quantization_config,
+        device_map="auto",
+        dtype=torch.bfloat16,
+        attn_implementation="sdpa",
+    )
+    model.eval()
+    return model, tokenizer
+
+
 def main() -> None:
-    loaded = load_model(seq_len=MAX_NEW_TOKENS)
-    tokenizer = loaded.tokenizer
-    model = loaded.model
+    model, tokenizer = load_model()
 
     prompt = tokenizer.apply_chat_template(
         [{"role": "user", "content": QUESTION}],
         tokenize=False,
         add_generation_prompt=True,
-        enable_thinking=True,
     )
-    inputs = tokenizer(prompt, return_tensors="pt").to(loaded.device)
+    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
     prompt_len = inputs["input_ids"].shape[-1]
 
+    streamer = TextStreamer(
+        tokenizer,
+        skip_prompt=True,
+        skip_special_tokens=False,
+    )
     gen_kwargs = {
         "max_new_tokens": MAX_NEW_TOKENS,
         "do_sample": True,
@@ -62,17 +88,18 @@ def main() -> None:
         "logits_processor": LogitsProcessorList(
             [PresencePenaltyLogitsProcessor(PRESENCE_PENALTY, prompt_len)]
         ),
-        "eos_token_id": tokenizer.eos_token_id,
-        "pad_token_id": tokenizer.pad_token_id or tokenizer.eos_token_id,
+        "pad_token_id": tokenizer.pad_token_id,
+        "streamer": streamer,
     }
 
+    print("--- generation ---", flush=True)
     with torch.inference_mode():
         output_ids = model.generate(**inputs, **gen_kwargs)
+    print("\n--- end ---", flush=True)
 
     text = tokenizer.decode(output_ids[0, prompt_len:], skip_special_tokens=True)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     OUT_PATH.write_text(text + "\n", encoding="utf-8")
-    print(text)
     print(f"wrote {OUT_PATH}")
 
 

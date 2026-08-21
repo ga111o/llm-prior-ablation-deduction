@@ -5,6 +5,7 @@ description = "Reconstruction error of Qwen-Scope SAEs on BF16 Qwen3.5-27B"
 requires-python = ">=3.12"
 dependencies = [
     "accelerate>=1.0.0",
+    "bitsandbytes>=0.46.0",
     "datasets>=3.0.0",
     "einops>=0.8.0",
     "huggingface_hub>=0.26.0",
