@@ -9,13 +9,14 @@ import torch
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    BitsAndBytesConfig,
     LogitsProcessor,
     LogitsProcessorList,
     TextStreamer,
 )
 
-MODEL_ID = "meta-llama/Llama-3.3-70B-Instruct"
+# Official meta-llama/Llama-3.3-70B-Instruct is gated. This is the same
+# Instruct 70B weights already quantized to 4-bit NF4 (bitsandbytes).
+MODEL_ID = "unsloth/Llama-3.3-70B-Instruct-bnb-4bit"
 QUESTION = "Who is the true culprit in Umineko When They Cry?"
 MAX_NEW_TOKENS = 8192
 PRESENCE_PENALTY = 1.5
@@ -45,15 +46,8 @@ def load_model():
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    quantization_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-    )
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_ID,
-        quantization_config=quantization_config,
         device_map="auto",
         dtype=torch.bfloat16,
         attn_implementation="sdpa",
