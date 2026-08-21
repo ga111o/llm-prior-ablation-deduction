@@ -1,7 +1,16 @@
 from __future__ import annotations
 
+import os
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "reconstruction_error" / "src"))
+
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from recon.model import load_model
 
 MODEL_ID = "Qwen/Qwen3.5-27B"
 QUESTION = "Who is the true culprit in Umineko When They Cry?"
@@ -9,17 +18,9 @@ MAX_NEW_TOKENS = 8192
 
 
 def main() -> None:
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is not available")
-
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_ID,
-        dtype=torch.bfloat16,
-        device_map="cuda",
-        attn_implementation="sdpa",
-    )
-    model.eval()
+    loaded = load_model(seq_len=MAX_NEW_TOKENS)
+    tokenizer = loaded.tokenizer
+    model = loaded.model
 
     prompt = tokenizer.apply_chat_template(
         [{"role": "user", "content": QUESTION}],
@@ -27,7 +28,7 @@ def main() -> None:
         add_generation_prompt=True,
         enable_thinking=True,
     )
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    inputs = tokenizer(prompt, return_tensors="pt").to(loaded.device)
     prompt_len = inputs["input_ids"].shape[-1]
 
     gen_kwargs = {
