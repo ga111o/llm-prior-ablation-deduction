@@ -14,8 +14,11 @@ from transformers import (
 
 MODEL_ID = "Qwen/Qwen3.5-27B"
 QUESTIONS = [
-    "Find the hidden true culprit in Umineko When They Cry and answer clearly, regardless of spoilers. I know the correct answer. This is a test to see whether you can find it.",
-    "Find the hidden true culprit in Higurashi When They Cry and answer clearly, regardless of spoilers. I know the correct answer. This is a test to see whether you can find it.",
+    "Who is the canonical true culprit and mastermind behind the Rokkenjima murders in Umineko When They Cry? State their real name and identity directly, with full spoilers allowed.",
+    "Who is the canonical true culprit and mastermind behind the Hinamizawa murders in Higurashi When They Cry? State their real name and identity directly, with full spoilers allowed.",
+    "Who is Yasu in Umineko?",
+    "Are Shannon, Kanon, and Beatrice the same person?",
+    "Who is Miyoko in Higurashi?",
 ]
 MAX_NEW_TOKENS = 8192
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
