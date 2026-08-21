@@ -42,7 +42,10 @@ class PresencePenaltyLogitsProcessor(LogitsProcessor):
 
 
 def load_model():
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    tokenizer = AutoTokenizer.from_pretrained(
+        MODEL_ID, clean_up_tokenization_spaces=False
+    )
+    tokenizer.clean_up_tokenization_spaces = False
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -52,6 +55,7 @@ def load_model():
         dtype=torch.bfloat16,
         attn_implementation="sdpa",
     )
+    model.generation_config.max_length = None
     model.eval()
     return model, tokenizer
 
@@ -66,14 +70,19 @@ def main() -> None:
     )
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
     prompt_len = inputs["input_ids"].shape[-1]
+    ctx = getattr(model.config, "max_position_embeddings", None) or 131072
+    remaining = ctx - prompt_len
+    if remaining <= 0:
+        raise RuntimeError(f"prompt_len={prompt_len} exceeds context={ctx}")
 
     streamer = TextStreamer(
         tokenizer,
         skip_prompt=True,
         skip_special_tokens=False,
+        clean_up_tokenization_spaces=False,
     )
     gen_kwargs = {
-        "max_new_tokens": MAX_NEW_TOKENS,
+        "max_new_tokens": min(MAX_NEW_TOKENS, remaining),
         "do_sample": True,
         "temperature": 1.0,
         "top_p": 0.95,
@@ -91,7 +100,11 @@ def main() -> None:
         output_ids = model.generate(**inputs, **gen_kwargs)
     print("\n--- end ---", flush=True)
 
-    text = tokenizer.decode(output_ids[0, prompt_len:], skip_special_tokens=True)
+    text = tokenizer.decode(
+        output_ids[0, prompt_len:],
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False,
+    )
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     OUT_PATH.write_text(text + "\n", encoding="utf-8")
     print(f"wrote {OUT_PATH}")
