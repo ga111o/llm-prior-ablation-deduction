@@ -15,6 +15,8 @@ from recon.model import load_model
 MODEL_ID = "Qwen/Qwen3.5-27B"
 QUESTION = "Who is the true culprit in Umineko When They Cry?"
 MAX_NEW_TOKENS = 8192
+RESULTS_DIR = Path(__file__).resolve().parent / "results"
+OUT_PATH = RESULTS_DIR / "who_is_culprit.txt"
 
 
 def main() -> None:
@@ -51,7 +53,10 @@ def main() -> None:
             output_ids = model.generate(**inputs, **gen_kwargs)
 
     text = tokenizer.decode(output_ids[0, prompt_len:], skip_special_tokens=True)
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    OUT_PATH.write_text(text + "\n", encoding="utf-8")
     print(text)
+    print(f"wrote {OUT_PATH}")
 
 
 if __name__ == "__main__":
