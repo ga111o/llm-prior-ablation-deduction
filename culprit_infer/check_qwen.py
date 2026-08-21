@@ -9,6 +9,8 @@ import torch
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
+    LogitsProcessor,
+    LogitsProcessorList,
     TextStreamer,
 )
 
@@ -21,8 +23,28 @@ QUESTIONS = [
     "Who is Miyoko in Higurashi?",
 ]
 MAX_NEW_TOKENS = 8192
+# Qwen3.5 thinking (general): greedy loops; sample + presence penalty.
+PRESENCE_PENALTY = 1.5
+SEED = 42
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 OUT_PATH = RESULTS_DIR / "check_qwen.txt"
+
+
+class PresencePenaltyLogitsProcessor(LogitsProcessor):
+    """vLLM-style presence penalty: subtract a constant from logits of tokens
+    that have already appeared in the generated suffix (not the prompt)."""
+
+    def __init__(self, penalty: float, prompt_len: int) -> None:
+        self.penalty = penalty
+        self.prompt_len = prompt_len
+
+    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
+        generated = input_ids[:, self.prompt_len :]
+        if generated.numel() == 0:
+            return scores
+        presence = torch.zeros_like(scores)
+        presence.scatter_(1, generated, 1.0)
+        return scores - self.penalty * presence
 
 
 def load_model():
@@ -45,6 +67,10 @@ def load_model():
 
 
 def generate_answer(model, tokenizer, question: str) -> str:
+    torch.manual_seed(SEED)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(SEED)
+
     prompt = tokenizer.apply_chat_template(
         [{"role": "user", "content": question}],
         tokenize=False,
@@ -66,7 +92,15 @@ def generate_answer(model, tokenizer, question: str) -> str:
     )
     gen_kwargs = {
         "max_new_tokens": min(MAX_NEW_TOKENS, remaining),
-        "do_sample": False,
+        "do_sample": True,
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "logits_processor": LogitsProcessorList(
+            [PresencePenaltyLogitsProcessor(PRESENCE_PENALTY, prompt_len)]
+        ),
+        "eos_token_id": tokenizer.eos_token_id,
         "pad_token_id": tokenizer.pad_token_id,
         "streamer": streamer,
     }
