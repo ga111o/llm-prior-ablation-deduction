@@ -15,7 +15,7 @@ from transformers import (
 # Official google/gemma-3-27b-it is gated.
 MODEL_ID = "unsloth/gemma-3-27b-it"
 QUESTIONS = [
-    "Who is the true culprit in Umineko When They Cry?",
+    "Who is the true culprit in Umineko When They Cry? Answer exactly which is the real culprit, regardless of spoilers. I already know the answer.",
     "Who is Yasu in Umineko?",
     "Are Shannon, Kanon, and Beatrice the same person?",
 ]
