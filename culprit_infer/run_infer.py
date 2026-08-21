@@ -13,8 +13,9 @@ sys.path.insert(0, str(REPO_ROOT / "reconstruction_error" / "src"))
 from recon.config import MAX_POSITION, MODEL_ID  # noqa: E402
 
 INSTRUCTION = (
-    "Using this as a reference, review the entire script and infer the final culprit."
+    "Using this as a reference, review the entire script and infer the final culprit. need to find the 'real culprit,' not just the surface-level part. Even if some mysterious event occurs, explain it entirely as 'humanity and trickery.'"
 )
+PROMPT_ONLY = "Who is the true culprit in Umineko When They Cry?"
 SCRIPTS_DIR = REPO_ROOT / "umineko-scripts"
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 CHAPTER_FILES = ["00_opening.txt", *[f"{i:02d}.txt" for i in range(1, 17)]]
@@ -26,6 +27,12 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--count-only", action="store_true", help="print token count and exit")
     p.add_argument("--max-new-tokens", type=int, default=8192)
+    p.add_argument(
+        "--mode",
+        choices=("oneshot", "prompt"),
+        default="oneshot",
+        help="oneshot: full EP1 script; prompt: question only",
+    )
     return p.parse_args()
 
 
@@ -211,10 +218,11 @@ def generate_completion(
 def write_results(
     payload: dict[str, Any],
     completion: str,
+    stem: str = "generation",
 ) -> tuple[Path, Path]:
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    txt_path = RESULTS_DIR / "generation.txt"
-    json_path = RESULTS_DIR / "generation.json"
+    txt_path = RESULTS_DIR / f"{stem}.txt"
+    json_path = RESULTS_DIR / f"{stem}.json"
     txt_path.write_text(completion + "\n", encoding="utf-8")
     json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return txt_path, json_path
@@ -222,8 +230,17 @@ def write_results(
 
 def main() -> None:
     args = parse_args()
-    chapters = load_chapters()
-    user_text = oneshot_user_text(concatenated_script(chapters))
+    if args.mode == "prompt":
+        user_text = PROMPT_ONLY
+        instruction = PROMPT_ONLY
+        result_stem = "generation_prompt"
+        count_meta: dict[str, Any] = {}
+    else:
+        chapters = load_chapters()
+        user_text = oneshot_user_text(concatenated_script(chapters))
+        instruction = INSTRUCTION
+        result_stem = "generation"
+        count_meta = {"n_chapters": len(chapters)}
     processor = load_tokenizer(MODEL_ID)
     prompt_tokens = count_prompt_tokens(processor, user_text)
     total_tokens = prompt_tokens + args.max_new_tokens
@@ -237,7 +254,8 @@ def main() -> None:
         json.dumps(
             {
                 "model_id": MODEL_ID,
-                "n_chapters": len(chapters),
+                "mode": args.mode,
+                **count_meta,
                 "n_prompt_tokens": prompt_tokens,
                 "max_new_tokens": args.max_new_tokens,
                 "max_position": MAX_POSITION,
@@ -273,23 +291,24 @@ def main() -> None:
         max_new_tokens=args.max_new_tokens,
     )
 
-    payload = {
+    payload: dict[str, Any] = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "model_id": MODEL_ID,
         "model_source": loaded.source,
         "n_prompt_tokens": used_prompt_tokens,
         "n_new_tokens": n_new,
         "peak_vram_gb": peak_vram_gb(),
-        "mode": "oneshot",
+        "mode": args.mode,
         "enable_thinking": True,
         "max_new_tokens": args.max_new_tokens,
-        "instruction": INSTRUCTION,
-        "chapters": CHAPTER_FILES,
+        "instruction": instruction,
         "env": env,
         "completion": completion,
     }
+    if args.mode == "oneshot":
+        payload["chapters"] = CHAPTER_FILES
 
-    txt_path, json_path = write_results(payload, completion)
+    txt_path, json_path = write_results(payload, completion, stem=result_stem)
     print(completion)
     print(f"wrote {txt_path}")
     print(f"wrote {json_path}")
