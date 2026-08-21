@@ -20,6 +20,16 @@ SCRIPTS_DIR = REPO_ROOT / "umineko-scripts"
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 CHAPTER_FILES = ["00_opening.txt", *[f"{i:02d}.txt" for i in range(1, 17)]]
 
+# Qwen thinking-mode sampling. Do not use greedy / temperature 0.
+GEN_DO_SAMPLE = True
+GEN_TEMPERATURE = 0.6
+GEN_TOP_P = 0.95
+GEN_TOP_K = 20
+GEN_MIN_P = 0.0
+GEN_PRESENCE_PENALTY = 1.5
+GEN_REPETITION_PENALTY = 1.1
+DEFAULT_SEED = 42
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
@@ -27,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--count-only", action="store_true", help="print token count and exit")
     p.add_argument("--max-new-tokens", type=int, default=8192)
+    p.add_argument("--seed", type=int, default=DEFAULT_SEED, help="sampling seed")
     p.add_argument(
         "--mode",
         choices=("oneshot", "prompt"),
@@ -175,13 +186,65 @@ def prepare_generate_inputs(encoded: dict[str, Any]) -> dict[str, Any]:
     return keep
 
 
+def _supports_presence_penalty() -> bool:
+    from transformers import GenerationConfig
+
+    fields = getattr(GenerationConfig, "model_fields", None)
+    if fields is not None:
+        return "presence_penalty" in fields
+    return "presence_penalty" in getattr(GenerationConfig, "__annotations__", {})
+
+
+def decoding_kwargs(processor, max_new_tokens: int) -> dict[str, Any]:
+    inner = inner_tokenizer(processor)
+    kwargs: dict[str, Any] = {
+        "max_new_tokens": max_new_tokens,
+        "do_sample": GEN_DO_SAMPLE,
+        "temperature": GEN_TEMPERATURE,
+        "top_p": GEN_TOP_P,
+        "top_k": GEN_TOP_K,
+        "min_p": GEN_MIN_P,
+        "use_cache": True,
+    }
+    eos_id = getattr(inner, "eos_token_id", None)
+    if eos_id is not None:
+        kwargs["eos_token_id"] = eos_id
+    pad_id = getattr(inner, "pad_token_id", None)
+    if pad_id is not None:
+        kwargs["pad_token_id"] = pad_id
+    if _supports_presence_penalty():
+        kwargs["presence_penalty"] = GEN_PRESENCE_PENALTY
+    else:
+        kwargs["repetition_penalty"] = GEN_REPETITION_PENALTY
+    return kwargs
+
+
+def decoding_log(gen_kwargs: dict[str, Any], seed: int) -> dict[str, Any]:
+    skip = {"max_new_tokens", "use_cache"}
+    logged = {key: value for key, value in gen_kwargs.items() if key not in skip}
+    logged["seed"] = seed
+    return logged
+
+
+def set_reproducible_seed(seed: int) -> None:
+    import torch
+    from transformers import set_seed
+
+    set_seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
 def generate_completion(
     model: Any,
     processor,
     user_text: str,
     device: Any,
     max_new_tokens: int,
-) -> tuple[str, int, int]:
+) -> tuple[str, int, int, dict[str, Any]]:
     import gc
 
     import torch
@@ -191,20 +254,20 @@ def generate_completion(
     prompt_len = _token_len(encoded["input_ids"])
     print(f"  generating prompt_tokens={prompt_len}", flush=True)
     inner = inner_tokenizer(processor)
-    gen_kwargs: dict[str, Any] = {
-        "max_new_tokens": max_new_tokens,
-        "do_sample": False,
-        "use_cache": True,
-    }
-    pad_id = getattr(inner, "pad_token_id", None)
-    if pad_id is not None:
-        gen_kwargs["pad_token_id"] = pad_id
+    gen_kwargs = decoding_kwargs(processor, max_new_tokens)
     sdpa_backends = [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]
     output_ids = None
     try:
         with torch.inference_mode():
             with sdpa_kernel(sdpa_backends):
-                output_ids = model.generate(**encoded, **gen_kwargs)
+                try:
+                    output_ids = model.generate(**encoded, **gen_kwargs)
+                except TypeError as exc:
+                    if "presence_penalty" not in gen_kwargs or "presence_penalty" not in str(exc):
+                        raise
+                    gen_kwargs.pop("presence_penalty")
+                    gen_kwargs["repetition_penalty"] = GEN_REPETITION_PENALTY
+                    output_ids = model.generate(**encoded, **gen_kwargs)
         new_ids = output_ids[0, prompt_len:].detach().cpu()
         text = inner.decode(new_ids, skip_special_tokens=False).strip()
         n_new = int(new_ids.shape[-1])
@@ -212,7 +275,7 @@ def generate_completion(
         del encoded, output_ids
         gc.collect()
         torch.cuda.empty_cache()
-    return text, prompt_len, n_new
+    return text, prompt_len, n_new, gen_kwargs
 
 
 def write_results(
@@ -250,6 +313,7 @@ def main() -> None:
             f"exceeds MAX_POSITION={MAX_POSITION}"
         )
 
+    planned_decoding = decoding_log(decoding_kwargs(processor, args.max_new_tokens), args.seed)
     print(
         json.dumps(
             {
@@ -260,6 +324,7 @@ def main() -> None:
                 "max_new_tokens": args.max_new_tokens,
                 "max_position": MAX_POSITION,
                 "enable_thinking": True,
+                **planned_decoding,
             },
             indent=2,
         )
@@ -277,13 +342,14 @@ def main() -> None:
 
     env = check_cuda()
     print(json.dumps(env, indent=2), flush=True)
+    set_reproducible_seed(args.seed)
     torch.cuda.reset_peak_memory_stats()
     loaded = load_model(seq_len=total_tokens)
     print(
         f"loaded {MODEL_ID} via {loaded.source}; device={loaded.device}",
         flush=True,
     )
-    completion, used_prompt_tokens, n_new = generate_completion(
+    completion, used_prompt_tokens, n_new, used_gen_kwargs = generate_completion(
         loaded.model,
         loaded.tokenizer,
         user_text,
@@ -304,6 +370,7 @@ def main() -> None:
         "instruction": instruction,
         "env": env,
         "completion": completion,
+        **decoding_log(used_gen_kwargs, args.seed),
     }
     if args.mode == "oneshot":
         payload["chapters"] = CHAPTER_FILES

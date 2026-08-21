@@ -58,12 +58,20 @@ Outputs under `reconstruction_error/results/`:
 
 Smoke adds `_smoke`. JSON and CSV are written for each stem.
 
-Culprit infer (all EP1 chapters, thinking on):
+Culprit infer (all EP1 chapters, thinking on; sampling T=0.6, seed 42 — not greedy):
 
 ```bash
 python culprit_infer/run_infer.py --count-only
 python culprit_infer/run_infer.py
 ```
+
+After the thinking-loop fix, re-run on Spark with a short prompt-only pass first:
+
+```bash
+python culprit_infer/run_infer.py --mode prompt --max-new-tokens 2048
+```
+
+Confirm thinking closes with `</think>` and does not cycle the same n-gram. Same machine + same `--seed` is the reproducibility story; SDPA/Flash is not bitwise across kernels.
 
 ## Attention
 
