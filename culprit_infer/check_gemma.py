@@ -12,7 +12,8 @@ from transformers import (
     TextStreamer,
 )
 
-MODEL_ID = "google/gemma-3-27b-it"
+# Official google/gemma-3-27b-it is gated.
+MODEL_ID = "unsloth/gemma-3-27b-it"
 QUESTIONS = [
     "Who is the true culprit in Umineko When They Cry?",
     "Who is Yasu in Umineko?",
